@@ -1,5 +1,10 @@
 import sys
-sys.path.append('/home/jupyter/vinhdq_phucnph/OOTDiffusion/')
+import os
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+oot_dir = os.path.join(current_dir, "..", "..", "..", "OOTDiffusion")
+print(oot_dir)
+sys.path.append(oot_dir)
 
 from preprocess.openpose.run_openpose import OpenPose  # Import the OpenPose class
 from typing import Union
