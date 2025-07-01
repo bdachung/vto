@@ -110,8 +110,10 @@ class AttentionUNet(nn.Module):
         
         return x
     
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
 class MaskRefiner:
-    def __init__(self, model_ckp_path="/home/jupyter/vinhdq_phucnph/CatVTON/model/MaskRefiner/epoch5", device="gpu"):
+    def __init__(self, model_ckp_path=os.path.join(current_dir, "MaskRefiner/epoch5"), device="gpu"):
         unet = AttentionUNet(in_channels=5, out_channels=1, num_channels=[128, 128, 256, 256, 512, 512])
         try:
             unet.load_state_dict(torch.load(model_ckp_path, weights_only=True, map_location="cpu"))
