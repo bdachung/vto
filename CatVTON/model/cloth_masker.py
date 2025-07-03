@@ -447,9 +447,9 @@ class AutoMasker:
         
         strong_mask_area = strong_mask_area.astype(np.bool_)
         
-        composed_mask_binary = composed_mask_binary | strong_mask_area | mask_dense_area
+        # composed_mask_binary = composed_mask_binary | strong_mask_area | mask_dense_area
         # composed_mask_binary = composed_mask_binary | mask_dense_area
-        # composed_mask_binary = composed_mask_binary | strong_mask_area
+        composed_mask_binary = composed_mask_binary | strong_mask_area
         
         composed_mask_binary = ((composed_mask_binary | weak_protect_area).astype(np.uint8) - weak_protect_area.astype(np.uint8)).astype(np.bool_)
         
