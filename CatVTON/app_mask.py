@@ -133,7 +133,8 @@ def repaint(person, mask, result):
     # mask = mask.filter(ImageFilter.GaussianBlur(kernal_size))
     person_np = np.array(person)
     result_np = np.array(result)
-    mask_np = np.array(mask) / 255
+    mask_np = np.array(mask) / np.max(mask)
+    mask_np = np.expand_dims(mask_np, axis=-1)
     repaint_result = person_np * (1 - mask_np) + result_np * mask_np
     repaint_result = Image.fromarray(repaint_result.astype(np.uint8))
     return repaint_result
@@ -280,7 +281,9 @@ def submit_function(person_image, cloth_image, cloth_type, num_inference_steps, 
         mask=mask,
         num_inference_steps=num_inference_steps,
         guidance_scale=2.5,
-        generator=generator
+        generator=generator,
+        height=args.height,
+        width=args.width,
     )[0]
     
     if args.repaint:
@@ -296,7 +299,8 @@ def submit_function(person_image, cloth_image, cloth_type, num_inference_steps, 
     progress = gr.update(value=100)  # Hoàn thành
     time.sleep(0.3)
 
-    return result_image, progress, final_mask_image
+    # return result_image, progress, final_mask_image
+    return result_image, progress
     
 def person_example_fn(image_path):
     return image_path
@@ -318,7 +322,7 @@ def app_gradio():
             with gr.Column(scale=1, min_width=350):
                 with gr.Row():
                     person_image = gr.Image(
-                        interactive=True, label="Person Image", type="filepath", width=384, height=512
+                        interactive=True, label="Person Image", type="filepath"
                     )
 
                 with gr.Row():
@@ -345,7 +349,7 @@ def app_gradio():
                         label="Inference Step", minimum=10, maximum=100, step=5, value=50
                     )
             with gr.Column(scale=1, min_width=250):
-                final_mask_image = gr.Image(interactive=False, label="Mask")
+                # final_mask_image = gr.Image(interactive=False, label="Mask")
                 progress_bar = gr.Slider(minimum=0, maximum=100, value=0, label="Processing...", visible=False)
                 with gr.Row():
                     with gr.Column():
@@ -377,7 +381,8 @@ def app_gradio():
             submit.click(
                 submit_function,
                 [person_image, cloth_image, cloth_type, num_inference_steps],
-                [result_image, progress_bar, final_mask_image],
+                # [result_image, progress_bar, final_mask_image],
+                [result_image, progress_bar],
             )
     demo.queue().launch(share=True, show_error=True)
 
