@@ -15,6 +15,16 @@ from model.skeleton_extractor import SkeletonExtractor
 from model.DensePose import DensePose
 from transformers import SegformerImageProcessor, AutoModelForSemanticSegmentation
 from diffusers.image_processor import VaeImageProcessor
+import cv2
+
+def hull_mask(mask_area: np.ndarray):
+    ret, binary = cv2.threshold(mask_area, 127, 255, cv2.THRESH_BINARY)
+    contours, hierarchy = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    hull_mask = np.zeros_like(mask_area)
+    for c in contours:
+        hull = cv2.convexHull(c)
+        hull_mask = cv2.fillPoly(np.zeros_like(mask_area), [hull], 255) | hull_mask
+    return hull_mask
 
 class AttentionBlock(nn.Module):
     def __init__(self, F_g, F_l, F_int):
@@ -303,23 +313,50 @@ class AutoARMPlus:
                 person_mask_image, 
                 person_pose_image,
                 person_dense_image,
-                person_image, 
-                person_mask_image, 
-                person_pose_image,
-                person_dense_image,
+                clothing_image, 
+                clothing_mask_image, 
+                clothing_pose_image,
+                clothing_dense_image,
               ], dim=1
             ).to(self.device)
             mask_pred = self.unet(input)
             
-        mask_pred = mask_pred.squeeze(0).squeeze(0).to("cpu").numpy() > 0.5
+        mask_pred = mask_pred.squeeze(0).squeeze(0).to("cpu").numpy() > 0.7
     
-        if is_full:
-            padding = 1
-        else:
-            padding = 15
+        # if is_full:
+        #     padding = 15
+        # else:
+        #     padding = 15
+
+        h, w = image_size
+
+        dilate_kernel = max(w, h) // 250
+        dilate_kernel = dilate_kernel if dilate_kernel % 2 == 1 else dilate_kernel + 1
+        dilate_kernel = np.ones((dilate_kernel, dilate_kernel), np.uint8)
         
-        mask_pred = binary_dilation(mask_pred, structure=np.ones((padding, padding)))
-    
+        kernal_size = max(w, h) // 25
+        kernal_size = kernal_size if kernal_size % 2 == 1 else kernal_size + 1
+
+        person_mask_image = np.array(person_mask_image).squeeze(0).squeeze(0).astype(np.uint8)
+        print("Shape:", person_mask_image.shape)
+        print("Max:", person_mask_image.max())
+        person_mask_image = hull_mask(person_mask_image * 255) // 255  # Convex Hull to expand the mask area
+        person_mask_image = cv2.GaussianBlur(person_mask_image * 255, (kernal_size, kernal_size), 0)
+        person_mask_image[person_mask_image < 25] = 0
+        person_mask_image[person_mask_image >= 25] = 1
+        person_mask_image = cv2.dilate(person_mask_image, dilate_kernel, iterations=1)
+
+        mask_pred = mask_pred.astype(np.uint8)
+        mask_pred = hull_mask(mask_pred * 255) // 255  # Convex Hull to expand the mask area
+        mask_pred = cv2.GaussianBlur(mask_pred * 255, (kernal_size, kernal_size), 0)
+        mask_pred[mask_pred < 25] = 0
+        mask_pred[mask_pred >= 25] = 1
+        mask_pred = cv2.dilate(mask_pred, dilate_kernel, iterations=1)
+      
+        mask_pred = np.bitwise_or(mask_pred, person_mask_image).astype(np.uint8)
+
+        mask_pred = binary_dilation(mask_pred, structure=dilate_kernel).astype(np.uint8)
+
         mask_pred_img = Image.fromarray(mask_pred).convert("RGB")
     
         return mask_pred_img
