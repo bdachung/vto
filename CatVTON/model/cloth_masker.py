@@ -472,7 +472,417 @@ class AutoMasker:
             "strong_protect_area": strong_protect_area,
             "accessory_protect_area": accessory_protect_area
         }
+
+    def remove_face_hand(
+        self,
+        image: Union[str, Image.Image],
+        predicted_mask: Union[str, Image.Image],
+        image_size=(512, 384),
+        mask_type: str = "upper",
+        is_full: bool = True,
+    ):
+        assert mask_type in ['upper', 'lower', 'overall', 'inner', 'outer'], f"mask_type should be one of ['upper', 'lower', 'overall', 'inner', 'outer'], but got {mask_type}"
+        
+        part = mask_type
+        
+        h, w = image_size
+        
+        dilate_kernel = max(w, h) // 250
+        dilate_kernel = dilate_kernel if dilate_kernel % 2 == 1 else dilate_kernel + 1
+        dilate_kernel = np.ones((dilate_kernel, dilate_kernel), np.uint8)
+        
+        kernal_size = max(w, h) // 25
+        kernal_size = kernal_size if kernal_size % 2 == 1 else kernal_size + 1
+        
+        predicted_mask = transforms.Resize(image_size)(predicted_mask.convert("L"))
+        # assert len(predicted_mask.shape) == 2, "predicted mask must be 2-dimention Image"
+        
+        if isinstance(image, str):
+            image = Image.open(image).convert("RGB")
             
+        image = transforms.Resize(image_size)(image)
+        
+        preprocess_results = self.preprocess_image(image)
+        
+        densepose = preprocess_results['densepose']
+        schp_lip = preprocess_results['schp_lip']
+        schp_atr = preprocess_results['schp_atr']
+        
+        densepose_mask = np.array(densepose)
+        schp_lip_mask = np.array(schp_lip)
+        schp_atr_mask = np.array(schp_atr)
+        
+        predicted_mask = np.array(predicted_mask)
+        
+        composed_mask_binary = (predicted_mask == predicted_mask.max())
+        
+        # Strong Protect Area (Hands, Face, Accessory, Feet)
+        hands_protect_area = part_mask_of(['hands'], densepose_mask, DENSE_INDEX_MAP)
+        hands_protect_area = cv2.dilate(hands_protect_area, dilate_kernel, iterations=1)
+        hands_protect_area = hands_protect_area & \
+            (part_mask_of(['Left-arm', 'Right-arm'], schp_atr_mask, ATR_MAPPING) | \
+             part_mask_of(['Left-arm', 'Right-arm'], schp_lip_mask, LIP_MAPPING))
+        face_protect_area = part_mask_of('Face', schp_lip_mask, LIP_MAPPING)
+
+        strong_protect_area = hands_protect_area | face_protect_area 
+        
+        composed_mask_binary = (composed_mask_binary) & (~strong_protect_area) 
+        
+        # if is_full:
+        #     composed_mask_binary = binary_dilation(composed_mask_binary, structure=np.ones((5, 5)))
+        # else:
+        #     composed_mask_binary = binary_dilation(composed_mask_binary, structure=np.ones((9, 9)))
+        
+        # composed_mask_binary = (composed_mask_binary.astype(np.bool_)) & (~strong_protect_area) 
+        # composed_mask_binary = cv2.dilate(composed_mask_binary, (5, 5), iterations=1)
+
+        # print("final result")
+        return {
+            "result": Image.fromarray(composed_mask_binary).convert("RGB"),
+        }
+
+    def get_mask(
+        self,
+        image: Union[str, Image.Image],
+        garment_type: str = "upper_body",
+        return_visualization: bool = False,
+        image_size: tuple = None
+    ):
+        """
+        Trích xuất mask tương ứng với loại trang phục từ SCHP segmentation
+        
+        Args:
+            image: Ảnh đầu vào (đường dẫn hoặc PIL Image)
+            garment_type: Loại trang phục ["upper_body", "lower_body", "dresses"]
+            return_visualization: Có trả về ảnh visualization không
+            image_size: Kích thước output (h, w), None để giữ nguyên kích thước input
+        
+        Returns:
+            dict chứa mask và các thông tin liên quan
+        """
+        # Mapping garment type sang các parts cần trích xuất
+        GARMENT_PARTS_MAPPING = {
+            "upper_body": {
+                "LIP": ['Upper-clothes', 'Coat'],
+                "ATR": ['Upper-clothes']
+            },
+            "lower_body": {
+                "LIP": ['Pants', 'Skirt'],
+                "ATR": ['Pants', 'Skirt']
+            },
+            "dresses": {
+                "LIP": ['Dress', 'Jumpsuits'],
+                "ATR": ['Dress']
+            }
+        }
+        
+        assert garment_type in GARMENT_PARTS_MAPPING.keys(), \
+            f"garment_type should be one of {list(GARMENT_PARTS_MAPPING.keys())}, but got {garment_type}"
+        
+        # Load và resize image nếu cần
+        if isinstance(image, str):
+            image = Image.open(image).convert("RGB")
+        
+        original_size = image.size  # (w, h)
+        
+        if image_size is not None:
+            image = transforms.Resize(image_size)(image)
+        
+        # Preprocess image
+        preprocess_results = self.preprocess_image(image)
+        
+        schp_lip_mask = np.array(preprocess_results['schp_lip'])
+        schp_atr_mask = np.array(preprocess_results['schp_atr'])
+        
+        # Trích xuất mask từ LIP và ATR
+        lip_parts = GARMENT_PARTS_MAPPING[garment_type]["LIP"]
+        atr_parts = GARMENT_PARTS_MAPPING[garment_type]["ATR"]
+        
+        mask_lip = part_mask_of(lip_parts, schp_lip_mask, LIP_MAPPING)
+        mask_atr = part_mask_of(atr_parts, schp_atr_mask, ATR_MAPPING)
+        
+        # Kết hợp mask từ cả 2 models
+        combined_mask = (mask_lip | mask_atr).astype(np.uint8) * 255
+        
+        # Convert sang PIL Image
+        mask_image = Image.fromarray(combined_mask)
+        
+        result = {
+            'mask': mask_image,
+            'garment_type': garment_type,
+            'lip_mask': Image.fromarray(mask_lip.astype(np.uint8) * 255),
+            'atr_mask': Image.fromarray(mask_atr.astype(np.uint8) * 255),
+            'schp_lip': preprocess_results['schp_lip'],
+            'schp_atr': preprocess_results['schp_atr'],
+            'densepose': preprocess_results['densepose']
+        }
+        
+        # Thêm visualization nếu được yêu cầu
+        if return_visualization:
+            result['visualization'] = vis_mask(image, mask_image)
+        
+        return result
+
+
+    def get_mask_with_body_parts(
+        self,
+        image: Union[str, Image.Image],
+        garment_type: str = "upper_body",
+        include_body_parts: bool = True,
+        return_visualization: bool = False,
+        image_size: tuple = None
+    ):
+        """
+        Trích xuất mask bao gồm cả body parts tương ứng
+        
+        Args:
+            image: Ảnh đầu vào
+            garment_type: Loại trang phục ["upper_body", "lower_body", "dresses"]
+            include_body_parts: Có bao gồm body parts không (arms cho upper, legs cho lower)
+            return_visualization: Có trả về ảnh visualization không
+            image_size: Kích thước output
+        
+        Returns:
+            dict chứa mask và các thông tin liên quan
+        """
+        # Mapping garment type sang các parts
+        GARMENT_PARTS_MAPPING = {
+            "upper_body": {
+                "clothes": {
+                    "LIP": ['Upper-clothes', 'Coat'],
+                    "ATR": ['Upper-clothes']
+                },
+                "body": {
+                    "LIP": ['Left-arm', 'Right-arm'],
+                    "ATR": ['Left-arm', 'Right-arm']
+                }
+            },
+            "lower_body": {
+                "clothes": {
+                    "LIP": ['Pants', 'Skirt'],
+                    "ATR": ['Pants', 'Skirt']
+                },
+                "body": {
+                    "LIP": ['Left-leg', 'Right-leg'],
+                    "ATR": ['Left-leg', 'Right-leg']
+                }
+            },
+            "dresses": {
+                "clothes": {
+                    "LIP": ['Dress', 'Jumpsuits'],
+                    "ATR": ['Dress']
+                },
+                "body": {
+                    "LIP": ['Left-arm', 'Right-arm', 'Left-leg', 'Right-leg'],
+                    "ATR": ['Left-arm', 'Right-arm', 'Left-leg', 'Right-leg']
+                }
+            }
+        }
+        
+        assert garment_type in GARMENT_PARTS_MAPPING.keys(), \
+            f"garment_type should be one of {list(GARMENT_PARTS_MAPPING.keys())}, but got {garment_type}"
+        
+        # Load image
+        if isinstance(image, str):
+            image = Image.open(image).convert("RGB")
+        
+        if image_size is not None:
+            image = transforms.Resize(image_size)(image)
+        
+        # Preprocess
+        preprocess_results = self.preprocess_image(image)
+        schp_lip_mask = np.array(preprocess_results['schp_lip'])
+        schp_atr_mask = np.array(preprocess_results['schp_atr'])
+        
+        # Trích xuất clothes mask
+        clothes_lip_parts = GARMENT_PARTS_MAPPING[garment_type]["clothes"]["LIP"]
+        clothes_atr_parts = GARMENT_PARTS_MAPPING[garment_type]["clothes"]["ATR"]
+        
+        clothes_mask_lip = part_mask_of(clothes_lip_parts, schp_lip_mask, LIP_MAPPING)
+        clothes_mask_atr = part_mask_of(clothes_atr_parts, schp_atr_mask, ATR_MAPPING)
+        clothes_mask = clothes_mask_lip | clothes_mask_atr
+        
+        # Trích xuất body mask nếu cần
+        if include_body_parts:
+            body_lip_parts = GARMENT_PARTS_MAPPING[garment_type]["body"]["LIP"]
+            body_atr_parts = GARMENT_PARTS_MAPPING[garment_type]["body"]["ATR"]
+            
+            body_mask_lip = part_mask_of(body_lip_parts, schp_lip_mask, LIP_MAPPING)
+            body_mask_atr = part_mask_of(body_atr_parts, schp_atr_mask, ATR_MAPPING)
+            body_mask = body_mask_lip | body_mask_atr
+            
+            # Kết hợp clothes và body
+            combined_mask = (clothes_mask | body_mask).astype(np.uint8) * 255
+        else:
+            combined_mask = clothes_mask.astype(np.uint8) * 255
+        
+        mask_image = Image.fromarray(combined_mask)
+        
+        result = {
+            'mask': mask_image,
+            'clothes_mask': Image.fromarray(clothes_mask.astype(np.uint8) * 255),
+            'garment_type': garment_type,
+            'schp_lip': preprocess_results['schp_lip'],
+            'schp_atr': preprocess_results['schp_atr'],
+            'densepose': preprocess_results['densepose']
+        }
+        
+        if include_body_parts:
+            result['body_mask'] = Image.fromarray(body_mask.astype(np.uint8) * 255)
+        
+        if return_visualization:
+            result['visualization'] = vis_mask(image, mask_image)
+        
+        return result
+
+
+    def get_mask_with_densepose(
+        self,
+        image: Union[str, Image.Image],
+        garment_type: str = "upper_body",
+        use_densepose: bool = True,
+        return_visualization: bool = False,
+        image_size: tuple = None
+    ):
+        """
+        Trích xuất mask kết hợp với DensePose
+        
+        Args:
+            image: Ảnh đầu vào
+            garment_type: Loại trang phục ["upper_body", "lower_body", "dresses"]
+            use_densepose: Có sử dụng DensePose không
+            return_visualization: Có trả về ảnh visualization không
+            image_size: Kích thước output
+        
+        Returns:
+            dict chứa mask và các thông tin liên quan
+        """
+        # Mapping garment type
+        GARMENT_CLOTHES_MAPPING = {
+            "upper_body": {
+                "LIP": ['Upper-clothes', 'Coat'],
+                "ATR": ['Upper-clothes']
+            },
+            "lower_body": {
+                "LIP": ['Pants', 'Skirt'],
+                "ATR": ['Pants', 'Skirt']
+            },
+            "dresses": {
+                "LIP": ['Dress', 'Jumpsuits'],
+                "ATR": ['Dress']
+            }
+        }
+        
+        GARMENT_DENSE_MAPPING = {
+            "upper_body": ['torso', 'big arms', 'forearms'],
+            "lower_body": ['thighs', 'legs'],
+            "dresses": ['torso', 'thighs', 'legs', 'big arms', 'forearms']
+        }
+        
+        assert garment_type in GARMENT_CLOTHES_MAPPING.keys(), \
+            f"garment_type should be one of {list(GARMENT_CLOTHES_MAPPING.keys())}, but got {garment_type}"
+        
+        # Load image
+        if isinstance(image, str):
+            image = Image.open(image).convert("RGB")
+        
+        if image_size is not None:
+            image = transforms.Resize(image_size)(image)
+        
+        # Preprocess
+        preprocess_results = self.preprocess_image(image)
+        schp_lip_mask = np.array(preprocess_results['schp_lip'])
+        schp_atr_mask = np.array(preprocess_results['schp_atr'])
+        densepose_mask = np.array(preprocess_results['densepose'])
+        
+        # Trích xuất clothes mask từ SCHP
+        lip_parts = GARMENT_CLOTHES_MAPPING[garment_type]["LIP"]
+        atr_parts = GARMENT_CLOTHES_MAPPING[garment_type]["ATR"]
+        
+        clothes_mask_lip = part_mask_of(lip_parts, schp_lip_mask, LIP_MAPPING)
+        clothes_mask_atr = part_mask_of(atr_parts, schp_atr_mask, ATR_MAPPING)
+        clothes_mask = clothes_mask_lip | clothes_mask_atr
+        
+        # Kết hợp với DensePose nếu cần
+        if use_densepose:
+            dense_parts = GARMENT_DENSE_MAPPING[garment_type]
+            dense_mask = part_mask_of(dense_parts, densepose_mask, DENSE_INDEX_MAP)
+            
+            # Kết hợp clothes mask và dense mask
+            combined_mask = (clothes_mask | dense_mask).astype(np.uint8) * 255
+        else:
+            combined_mask = clothes_mask.astype(np.uint8) * 255
+        
+        mask_image = Image.fromarray(combined_mask)
+        
+        result = {
+            'mask': mask_image,
+            'clothes_mask': Image.fromarray(clothes_mask.astype(np.uint8) * 255),
+            'garment_type': garment_type,
+            'schp_lip': preprocess_results['schp_lip'],
+            'schp_atr': preprocess_results['schp_atr'],
+            'densepose': preprocess_results['densepose']
+        }
+        
+        if use_densepose:
+            result['dense_mask'] = Image.fromarray(dense_mask.astype(np.uint8) * 255)
+        
+        if return_visualization:
+            result['visualization'] = vis_mask(image, mask_image)
+        
+        return result
+
+
+    def get_masks_batch(
+        self,
+        images: list,
+        garment_types: Union[str, list] = "upper_body",
+        method: str = "simple",
+        return_visualization: bool = False,
+        **kwargs
+    ):
+        """
+        Trích xuất mask cho nhiều ảnh
+        
+        Args:
+            images: List các ảnh đầu vào
+            garment_types: Loại trang phục (string cho tất cả hoặc list tương ứng)
+            method: Phương pháp trích xuất ["simple", "with_body", "with_densepose"]
+            return_visualization: Có trả về visualization không
+            **kwargs: Các tham số khác cho method
+        
+        Returns:
+            list of dict chứa mask và các thông tin liên quan
+        """
+        if isinstance(garment_types, str):
+            garment_types = [garment_types] * len(images)
+        
+        assert len(images) == len(garment_types), \
+            "Number of images and garment_types must match"
+        
+        # Chọn method
+        method_map = {
+            "simple": self.get_mask,
+            "with_body": self.get_mask_with_body_parts,
+            "with_densepose": self.get_mask_with_densepose
+        }
+        
+        assert method in method_map.keys(), \
+            f"method should be one of {list(method_map.keys())}, but got {method}"
+        
+        get_mask_func = method_map[method]
+        
+        results = []
+        for image, garment_type in zip(images, garment_types):
+            result = get_mask_func(
+                image=image,
+                garment_type=garment_type,
+                return_visualization=return_visualization,
+                **kwargs
+            )
+            results.append(result)
+        
+        return results
         
     def __call__(
         self,
