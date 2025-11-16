@@ -524,9 +524,11 @@ class AutoMasker:
              part_mask_of(['Left-arm', 'Right-arm'], schp_lip_mask, LIP_MAPPING))
         face_protect_area = part_mask_of('Face', schp_lip_mask, LIP_MAPPING)
 
-        strong_protect_area = hands_protect_area | face_protect_area 
-        
+        strong_protect_area = hands_protect_area | face_protect_area
+
         composed_mask_binary = (composed_mask_binary) & (~strong_protect_area) 
+
+        composed_mask_binary = cv2.dilate(composed_mask_binary.astype(np.uint8), (25, 25), iterations=2)
         
         # if is_full:
         #     composed_mask_binary = binary_dilation(composed_mask_binary, structure=np.ones((5, 5)))
@@ -534,7 +536,6 @@ class AutoMasker:
         #     composed_mask_binary = binary_dilation(composed_mask_binary, structure=np.ones((9, 9)))
         
         # composed_mask_binary = (composed_mask_binary.astype(np.bool_)) & (~strong_protect_area) 
-        # composed_mask_binary = cv2.dilate(composed_mask_binary, (5, 5), iterations=1)
 
         # print("final result")
         return {
