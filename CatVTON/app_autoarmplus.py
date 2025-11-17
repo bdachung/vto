@@ -173,7 +173,7 @@ automasker = AutoMasker(
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
 autoarm_plus_model = AutoARMPlus(
-  model_ckp_path=os.path.join(current_dir, "model/AutoARMPlus/halfbody"), 
+  model_ckp_path=os.path.join(current_dir, "model/AutoARMPlus/dresscode_model"), 
   densepose_ckpt=os.path.join(repo_path, "DensePose"),
   device='cuda'
 )
@@ -239,10 +239,24 @@ def predict(person_image, cloth_image, category, image_size=(1024, 512), device=
           cloth_type=mapping_categories[category],
           image_size=(512, 384),
           is_full=True,
-        )['result']
+        )
 
-        final_result = automasker.create_refined_mask(person_image, pred_mask_image, mask_type=category)['result']
-        mask = np.array(final_result.convert("L").resize(original_size))
+        mask1_pil = pred_mask_image['person_mask_image'].convert("L")
+        mask2_pil = pred_mask_image['result'].convert("L")
+        mask1_pil = mask1_pil.resize(original_size)
+        mask2_pil = mask2_pil.resize(original_size)
+        # Convert masks to numpy arrays for bitwise operation
+        mask1_np = np.array(mask1_pil) > 0
+        mask2_np = np.array(mask2_pil) > 0
+
+        combined_mask_np = np.bitwise_or(mask1_np, mask2_np).astype(np.uint8) * 255
+
+        combined_mask_pil = automasker.remove_face_hand(
+            person_image, Image.fromarray(combined_mask_np), (h, w)
+        )['result'].convert("L")
+
+        # final_result = automasker.create_refined_mask(person_image, pred_mask_image, mask_type=category)['result']
+        mask = np.array(combined_mask_pil.resize(original_size))
     else:
         agnostic_mask_image = automasker(person_image, mask_type=category)['mask']
         mask = agnostic_mask_image.resize(original_size)
@@ -285,7 +299,7 @@ def submit_function(person_image, cloth_image, cloth_type, num_inference_steps, 
         condition_image=cloth_image,
         mask=mask,
         num_inference_steps=num_inference_steps,
-        guidance_scale=7.5,
+        guidance_scale=3,
         generator=generator,
         height=args.height,
         width=args.width,
